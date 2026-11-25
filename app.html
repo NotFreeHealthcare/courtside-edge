@@ -811,7 +811,7 @@ async function loadAll(force){
     else S.status.standings='Standings did not load, so team strength is treated as equal.';
     if(inj.status==='fulfilled') S.injuries=inj.value; else S.status.inj='Injury report did not load.';
     S.b2b = yb.status==='fulfilled' ? new Set(yb.value.flatMap(g=>[g.home.id,g.away.id])) : new Set();
-    if(S.set.oddsKey){ try{ S.oddsApi = await loadOdds(force) || []; }catch(e){ S.oddsApi=[]; S.status.odds='The Odds API did not answer ('+e.message+'). Check your key in Settings.'; } }
+    if(S.set.oddsKey){ try{ S.oddsApi = await loadOdds(force) || []; if(S.oddsApi.length && S.set.book && !S.oddsApi.some(myBook)) S.status.book=`${S.set.book} isn't in today's odds feed, so prices are the multi-book consensus. Type ${S.set.book}'s multiplier in Edit odds before betting.`; }catch(e){ S.oddsApi=[]; S.status.odds='The Odds API did not answer ('+e.message+'). Check your key in Settings.'; } }
   } else { useDemo(); }
   S.loading=false; $('#refresh').classList.remove('spin');
   renderAll();
@@ -877,7 +877,7 @@ function analyze(g){
 function marketsOf(g){
   let m={}, src='none';
   const api=matchApi(g);
-  if(api){ m=api; src='odds-api'; } else if(g.espnOdds){ m=JSON.parse(JSON.stringify(g.espnOdds)); src='espn'; }
+  if(api){ src=api._book?'book':'odds-api'; delete api._book; m=api; } else if(g.espnOdds){ m=JSON.parse(JSON.stringify(g.espnOdds)); src='espn'; }
   const srcs={}; for(const k in m) srcs[k]=src;
   const o=S.ov[g.id]?.odds||{};
   if(o.spPoint!=null && o.spPoint!==''){ const p=+o.spPoint; m.spH={...(m.spH||{odds:1.91}),point:p}; m.spA={...(m.spA||{odds:1.91}),point:-p}; srcs.spH=srcs.spA='manual'; }
@@ -890,6 +890,12 @@ function matchApi(g){
   const nick=s=>(s||'').trim().split(/\s+/).pop().toLowerCase();
   const ev=S.oddsApi.find(e=>nick(e.home_team)===nick(g.home.name) && nick(e.away_team)===nick(g.away.name)); if(!ev) return null;
   const med=a=>{ a=a.slice().sort((x,y)=>x-y); const n=a.length; return n ? (n%2 ? a[(n-1)/2] : (a[n/2-1]+a[n/2])/2) : null; };
+  const mine=myBook(ev);
+  if(mine){ const m={}; (mine.markets||[]).forEach(mk=>(mk.outcomes||[]).forEach(oc=>{
+      let k; if(mk.key==='h2h') k=oc.name===ev.home_team?'mlH':'mlA'; else if(mk.key==='spreads') k=oc.name===ev.home_team?'spH':'spA';
+      else if(mk.key==='totals') k=/over/i.test(oc.name)?'ov':'un'; else return;
+      m[k]={odds:oc.price, point:oc.point}; }));
+    if(Object.keys(m).length){ m._book=true; return m; } }
   const col={};
   (ev.bookmakers||[]).forEach(b=>(b.markets||[]).forEach(mk=>(mk.outcomes||[]).forEach(oc=>{
     let k; if(mk.key==='h2h') k=oc.name===ev.home_team?'mlH':'mlA'; else if(mk.key==='spreads') k=oc.name===ev.home_team?'spH':'spA';
@@ -907,6 +913,9 @@ function matchApi(g){
   if(m.ov && m.un && m.un.point!==m.ov.point) m.un={...m.un, point:m.ov.point};
   return Object.keys(m).length ? m : null;
 }
+const normBook=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]/g,'').replace(/^1x/,'onex');
+function myBook(ev){ const want=normBook(S.set.book); if(!want) return null;
+  return (ev.bookmakers||[]).find(b=>normBook(b.title)===want || normBook(b.key)===want || normBook(b.key).startsWith(want)) || null; }
 const noVig=(o1,o2)=> (o1>1&&o2>1) ? (1/o1)/((1/o1)+(1/o2)) : null;
 function bankroll(){ return S.set.startBank + S.bets.reduce((a,b)=>a+profitOf(b),0); }
 function profitOf(b){ return b.status==='won' ? b.stake*(b.odds-1) : b.status==='lost' ? -b.stake : 0; }
@@ -919,7 +928,7 @@ function confParts({ev,p,pModel,pMkt,gp,src,penalty}){
   return {
     edge: clamp(ev/0.08,0,1)*30,                                   // size of the edge
     prob: clamp((p-0.45)/0.25,0,1)*25,                             // how likely the bet is to win
-    data: clamp(gp/20,0,1)*15 + (src==='odds-api'||src==='manual'?10:src==='espn'?6:0),  // sample size + price quality
+    data: clamp(gp/20,0,1)*15 + (src==='odds-api'||src==='manual'||src==='book'?10:src==='espn'?6:0),  // sample size + price quality
     agree: pMkt==null ? 8 : 20*(1-clamp(Math.abs(pModel-pMkt)/0.15,0,1)), // big gaps vs the market usually mean missing info
     penalty: penalty||0, gp, src };
 }
@@ -1044,7 +1053,7 @@ function ring(c){ const r=15, C=2*Math.PI*r, col=c>=75?'var(--good)':c>=60?'var(
   return `<svg class="ring" viewBox="0 0 36 36" role="img" aria-label="Confidence ${c} of 100"><circle cx="18" cy="18" r="${r}" fill="none" stroke="rgba(255,255,255,.1)" stroke-width="3.2"/><circle cx="18" cy="18" r="${r}" fill="none" stroke="${col}" stroke-width="3.2" stroke-linecap="round" stroke-dasharray="${(C*c/100).toFixed(1)} ${C.toFixed(1)}" transform="rotate(-90 18 18)"/><text x="18" y="22" text-anchor="middle" fill="#EAF0FA" font-size="11" font-family="JetBrains Mono,monospace" font-weight="700">${c}</text></svg>`; }
 const confCol = c => c>=75?'var(--good)':c>=60?'var(--teal)':c>=40?'var(--amber)':'var(--dim)';
 const confLabel = c =>c>=75?'Strong':c>=60?'High':c>=40?'Medium':'Low';
-const srcLabel = s => ({'odds-api':'Market consensus','espn':'ESPN posted line','manual':'Your odds','none':'No price'})[s]||s;
+const srcLabel = s => ({'book':`${S.set.book||'Your sportsbook'} odds`,'odds-api':'Market consensus','espn':'ESPN posted line','manual':'Your odds','none':'No price'})[s]||s;
 const when = g => new Date(g.date).toLocaleString([], {weekday:'short', hour:'numeric', minute:'2-digit'});
 const vpill = v => `<span class="pill v-${v.toLowerCase()}">${v}</span>`;
 
