@@ -3,7 +3,8 @@
 NBA betting analyzer: projections, confidence ratings, Kelly stake sizing (capped at ₱500), combos, visual evidence (injuries, depth charts, head-to-head, matchups, form, price) and a model that grades itself against final scores.
 
 ## Run it
-Open `index.html` in Chrome or Safari. It pulls live data from ESPN's public feeds. No install needed.
+Live site: GitHub Pages serves `index.html` from the `main` branch, so every push updates the website.
+Or open `index.html` in Chrome or Safari. It pulls live data from ESPN's public feeds. No install needed.
 
 ## Edit it
 - `app.html` is the source (page content without the `<html>`/`<head>` wrapper).
