@@ -691,6 +691,9 @@ function etYMD(off){ const d=new Date((SNAP?SNAP.t:Date.now())+off*864e5);
   return new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(d).replace(/-/g,''); }
 // Snapshot mode: the published preview can't reach ESPN, so live data is baked in as window.__CE_SNAP.
 const SNAP=(typeof window!=='undefined' && window.__CE_SNAP && window.__CE_SNAP.data) ? window.__CE_SNAP : null;
+// Inside a Google Apps Script web app, Google's server can fetch the data when the browser can't.
+const viaGoogle=()=>typeof google!=='undefined' && google.script && google.script.run;
+const googleFetch=url=>new Promise((ok,no)=>google.script.run.withSuccessHandler(ok).withFailureHandler(no).proxy(url));
 let inFlight=0; const waiting=[];
 async function fetchJSON(url, ms=12000){
   if(SNAP){ if(url in SNAP.data) return {json:SNAP.data[url], headers:new Headers()}; throw new Error('not in snapshot'); }
@@ -698,6 +701,7 @@ async function fetchJSON(url, ms=12000){
   inFlight++;
   const c = new AbortController(); const t = setTimeout(()=>c.abort(), ms);
   try{ const r = await fetch(url,{signal:c.signal}); if(!r.ok) throw new Error('HTTP '+r.status); return {json:await r.json(), headers:r.headers}; }
+  catch(e){ if(viaGoogle()) return {json:JSON.parse(await googleFetch(url)), headers:new Headers()}; throw e; }
   finally{ clearTimeout(t); inFlight--; const nx=waiting.shift(); if(nx) nx(); }
 }
 
