@@ -684,7 +684,8 @@ const store = {
 };
 function Phi(x){ const t=1/(1+0.2316419*Math.abs(x)); const d=0.3989423*Math.exp(-x*x/2);
   const p=d*t*(0.3193815+t*(-0.3565638+t*(1.781478+t*(-1.821256+t*1.330274)))); return x>0?1-p:p; }
-let SD_M = 12.5, SD_T = 18;   // typical NBA spread of results around expectation (margin, total)
+const SD_M0 = 13.5, SD_T0 = 18.5; // typical miss around the projection (margin, total), fitted on 2024-26 tuning games
+let SD_M = SD_M0, SD_T = SD_T0;
 const buzz = () => { try{ navigator.vibrate && navigator.vibrate(8); }catch(e){} };
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(toast._t); toast._t=setTimeout(()=>t.classList.remove('show'),2400); }
 function etYMD(off){ const d=new Date((SNAP?SNAP.t:Date.now())+off*864e5);
@@ -706,9 +707,9 @@ async function fetchJSON(url, ms=12000){
 }
 
 /* ---------- state ---------- */
-const DEF = {startBank:2000,kelly:0.5,maxBet:500,maxPct:5,dailyPct:15,minBet:20,minEdge:2,minConf:50,winMode:true,minWinP:55,trust:40,hca:2,oddsKey:'',book:'1xBet',combos:true,autoTune:true};
+const DEF = {startBank:2000,kelly:0.5,maxBet:500,maxPct:5,dailyPct:15,minBet:20,minEdge:2,minConf:50,winMode:true,minWinP:55,trust:25,hca:2,oddsKey:'',book:'1xBet',combos:true,autoTune:true};
 const S = {
-  set: Object.assign({}, DEF, store.get('set',{})),
+  set: (()=>{ const v=Object.assign({}, DEF, store.get('set',{})); if((v.ver||0)<2){ v.trust=DEF.trust; v.ver=2; store.set('set',v); } return v; })(),
   bets: store.get('bets',[]), ov: store.get('ov',{}),
   games:[], standings:{}, injuries:{}, b2b:new Set(), lg:114, oddsApi:[], oddsLeft:null,
   demo:false, dayOffset:0, tab:'slate', impact:{}, logs:{}, rosters:{}, status:{}, loading:false,
@@ -850,7 +851,7 @@ function rating(id){
   const t=S.standings[id]; if(!t || !(t.pf>0) || !(t.pa>0)) return {net:0,off:0,def:0,gp:0,raw:0};
   // Early season: start from last season (pulled 30% toward average for roster changes), worth about 10 games,
   // then let this season's results take over as games are played. Without last season, start from league average.
-  const gp=(t.w||0)+(t.l||0), pv=S.prev?.[id], K=pv?10:8, R=.7;
+  const gp=(t.w||0)+(t.l||0), pv=S.prev?.[id], K=pv?10:8, R=.5;
   const pNet=pv&&pv.pf>0?(pv.pf-pv.pa)*R:0, pOff=pv&&pv.pf>0?(pv.pf-(S.lgPrev||S.lg))*R:0, pDef=pv&&pv.pa>0?(pv.pa-(S.lgPrev||S.lg))*R:0;
   const mix=(cur,pri)=>(cur*gp+pri*K)/(gp+K);
   return {net:mix(t.pf-t.pa,pNet), off:mix(t.pf-S.lg,pOff), def:mix(t.pa-S.lg,pDef), gp, raw:t.pf-t.pa, prev:pv?pv.pf-pv.pa:null};
@@ -1641,7 +1642,7 @@ function renderBet(){
 /* ---------- learning: snapshot every prediction, grade it, retune ---------- */
 const etDay=iso=>new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(iso)).replace(/-/g,'');
 const tuneOn=()=>!!(S.set.autoTune && S.tune && S.tune.ready);
-function applyTune(){ const t=tuneOn()?S.tune:null; SD_M=t?t.sdM:12.5; SD_T=t?t.sdT:18; }
+function applyTune(){ const t=tuneOn()?S.tune:null; SD_M=t?t.sdM:SD_M0; SD_T=t?t.sdT:SD_T0; }
 let snapDirty=false;
 function recordSnap(g,a){
   if(S.demo || g.state!=='pre') return;
@@ -1657,7 +1658,7 @@ function computeTune(){
   if(n<15) return (S.tune={n,ready:false});
   const k=n/(n+40), r=gs.map(x=>(x.res.hs-x.res.as)-x.mRaw), bias=avg(r), sdRaw=Math.sqrt(avg(r.map(v=>(v-bias)**2)));
   const tg=gs.filter(x=>x.totRaw!=null), tr=tg.map(x=>(x.res.hs+x.res.as)-x.totRaw), tb=tr.length?avg(tr):0, sdTRaw=tr.length?Math.sqrt(avg(tr.map(v=>(v-tb)**2))):18;
-  const mAdj=clamp(bias*k,-3,3), sdM=clamp(12.5+(sdRaw-12.5)*k,10,16), tAdj=clamp(tb*k,-6,6), sdT=clamp(18+(sdTRaw-18)*k,14,22);
+  const mAdj=clamp(bias*k,-3,3), sdM=clamp(SD_M0+(sdRaw-SD_M0)*k,11,17), tAdj=clamp(tb*k,-6,6), sdT=clamp(SD_T0+(sdTRaw-SD_T0)*k,15,23);
   // how much to trust the model vs the market: the blend with the lowest log-loss on finished games
   const gm=gs.filter(x=>x.mk!=null), ll=(p,y)=>-(y?Math.log(clamp(p,.01,.99)):Math.log(clamp(1-p,.01,.99)));
   let bestW=S.set.trust/100, best=Infinity, llM=0, llK=0;
@@ -1760,7 +1761,7 @@ function learnHtml(){
   return `<section class="glass panel learn"><div class="why-top"><h3 class="why-h">Learning</h3>${S.set.autoTune?'<span class="pill v-bet">On</span>':'<span class="pill v-pass">Off</span>'}</div>
     <div class="two-tiles" style="margin-top:10px"><div class="tile"><span>Games graded</span><b>${n}</b></div><div class="tile"><span>Picked the winner</span><b>${pct(T.acc)}</b><small>${T.accMkt!=null?`sportsbook ${pct(T.accMkt)}`:''}</small></div></div>
     <div class="tunes">${row('Score correction','0',sgn(T.mAdj)+' pts',T.bias>0.3?'home sides did better than projected':T.bias<-0.3?'home sides did worse than projected':'projections were centered')}
-      ${row('Typical miss','12.5',T.sdM.toFixed(1)+' pts')}${row('Totals correction','0',sgn(T.tAdj)+' pts')}${row('Trust in model',S.set.trust+'%',pct(T.trust),T.nm>=15?`best blend on ${T.nm} games: ${pct(T.bestW)}`:'needs 15 games with odds')}</div>
+      ${row('Typical miss',SD_M0.toFixed(1),T.sdM.toFixed(1)+' pts')}${row('Totals correction','0',sgn(T.tAdj)+' pts')}${row('Trust in model',S.set.trust+'%',pct(T.trust),T.nm>=15?`best blend on ${T.nm} games: ${pct(T.bestW)}`:'needs 15 games with odds')}</div>
     ${lost.length?`<div class="lbl" style="margin-top:12px">Why bets lost</div><div class="loss-chips"><span><b>${cnt('Normal variance')}</b> bad luck</span><span><b>${cnt('Upset')}</b> upsets</span><span><b>${cnt('Model miss')}</b> model misses</span><span><b>${cnt('Lineup surprise')}</b> lineup surprises</span></div>`:''}
   </section>`;
 }
@@ -1945,7 +1946,8 @@ function renderSettings(){
       <p>Optional. Get a free key at <a href="https://the-odds-api.com" target="_blank" rel="noopener">the-odds-api.com</a> (500 credits a month; each refresh uses 3, and results are cached for 10 minutes). Without a key the app uses ESPN's posted line.${S.oddsLeft!=null?` Credits left this month: <b class="mono">${esc(S.oddsLeft)}</b>.`:''}</p></div></section>
   <section class="glass set-group"><h3>How the numbers work</h3><div class="prose">
     <p><b>Projection.</b> Each team's points scored and allowed per game, pulled toward league average while the season is young, plus home court, back-to-backs, injured players and your own read. That gives a projected margin and total.</p>
-    <p><b>Win chance.</b> NBA results land about 12.5 points either side of the projected margin (18 for totals). That spread turns a projected margin into a percentage, which is then blended with the market's no-margin probability.</p>
+    <p><b>Backtest (2,100 past games, closing DraftKings odds).</b> Picking winners: model 67–72%, sportsbook 70–74%. Betting the model's edges at closing odds lost money in every test period, so the app now trusts the sportsbook more (25% model) and recommends fewer bets. Injuries and early-line timing, where a real edge would come from, aren't in the backtest.</p>
+    <p><b>Win chance.</b> NBA results land about 13.5 points either side of the projected margin (18.5 for totals), measured on 2024-26 games. That spread turns a projected margin into a percentage, which is then blended with the market's no-margin probability.</p>
     <p><b>Edge.</b> Win chance × decimal odds − 1. At odds of 1.91 you need 52.4% just to break even.</p>
     <p><b>Confidence (0–99).</b> Combines edge size, win chance, games played, price quality and agreement with the market, minus points for questionable players. It's a ranking aid, not a promise. The tracker shows whether it holds up.</p>
     <p><b>Stake.</b> Kelly fraction × bankroll × edge ÷ (odds − 1), capped by your per-bet % and ₱${s.maxBet} limit, rounded down to ₱10.</p>
