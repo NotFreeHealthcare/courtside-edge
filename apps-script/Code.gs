@@ -9,8 +9,8 @@ function doGet() {
 }
 
 // Server-side fetch, used only when the browser can't reach ESPN directly.
-// Limited to ESPN's public NBA feeds and The Odds API's NBA odds so the web app can't be used as an open proxy.
-var ALLOWED = /^https:\/\/((site\.api|site\.web\.api)\.espn\.com\/apis\/[^\s]*basketball\/nba\/|api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/)/;
+// Limited to ESPN's public NBA feeds and NBA odds from The Odds API / SportsGameOdds so the web app can't be used as an open proxy.
+var ALLOWED = /^https:\/\/((site\.api|site\.web\.api)\.espn\.com\/apis\/[^\s]*basketball\/nba\/|api\.the-odds-api\.com\/v4\/sports\/basketball_nba\/|api\.sportsgameodds\.com\/v2\/events\?leagueID=NBA&)/;
 
 function proxy(url) {
   if (!ALLOWED.test(url)) throw new Error('URL not allowed');

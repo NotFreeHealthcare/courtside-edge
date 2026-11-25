@@ -707,7 +707,7 @@ async function fetchJSON(url, ms=12000){
 }
 
 /* ---------- state ---------- */
-const DEF = {startBank:2000,kelly:0.5,maxBet:500,maxPct:5,dailyPct:15,minBet:20,minEdge:2,minConf:50,winMode:true,minWinP:55,trust:25,hca:2,oddsKey:'',book:'1xBet',combos:true,autoTune:true};
+const DEF = {startBank:2000,kelly:0.5,maxBet:500,maxPct:5,dailyPct:15,minBet:20,minEdge:2,minConf:50,winMode:true,minWinP:55,trust:25,hca:2,oddsKey:'',sgoKey:'',book:'1xBet',combos:true,autoTune:true};
 const S = {
   set: (()=>{ const v=Object.assign({}, DEF, store.get('set',{})); if((v.ver||0)<2){ v.trust=DEF.trust; v.ver=2; store.set('set',v); } return v; })(),
   bets: store.get('bets',[]), ov: store.get('ov',{}),
@@ -776,6 +776,28 @@ async function loadOdds(force){
   S.oddsLeft = headers.get('x-requests-remaining');
   store.set('oddsCache',{t:Date.now(), key:key.slice(-6), data:json}); return json;
 }
+const SGO_IDS={'1xbet':'1xBet'};
+const sgoBookId=()=>{ const n=String(S.set.book||'').toLowerCase().replace(/[^a-z0-9]/g,''); return n||'1xbet'; };
+async function loadSGO(force){
+  const key=(S.set.sgoKey||'').trim(); if(!key) return null;
+  const book=sgoBookId(), cache=store.get('sgoCache',null), tag=key.slice(-6)+book;
+  if(!force && cache && cache.key===tag && Date.now()-cache.t < 10*60e3) return cache.data;
+  const ids='points-home-game-ml-home,points-home-game-sp-home,points-all-game-ou-over';
+  const {json}=await fetchJSON(`https://api.sportsgameodds.com/v2/events?leagueID=NBA&oddsAvailable=true&bookmakerID=${encodeURIComponent(book)}&oddID=${ids}&includeOpposingOdds=true&limit=50&apiKey=${encodeURIComponent(key)}`);
+  if(json && json.success===false) throw new Error(json.error||'request failed');
+  const nm=t=>t?.names?.long || [t?.names?.location,t?.names?.medium].filter(Boolean).join(' ') || t?.names?.medium || '';
+  const data=(json.data||[]).map(ev=>{
+    const H=nm(ev.teams?.home), A=nm(ev.teams?.away); if(!H||!A) return null;
+    const bk=id=>ev.odds?.[id]?.byBookmaker?.[book], h2h=[], sp=[], tot=[];
+    const ml=[[bk('points-home-game-ml-home'),H],[bk('points-away-game-ml-away'),A]];
+    ml.forEach(([b,name])=>{ const d=dec(b?.odds); if(d && b.available!==false) h2h.push({name,price:+d.toFixed(3)}); });
+    [[bk('points-home-game-sp-home'),H],[bk('points-away-game-sp-away'),A]].forEach(([b,name])=>{ const d=dec(b?.odds), pt=parseFloat(b?.spread); if(d && !isNaN(pt) && b.available!==false) sp.push({name,price:+d.toFixed(3),point:pt}); });
+    [[bk('points-all-game-ou-over'),'Over'],[bk('points-all-game-ou-under'),'Under']].forEach(([b,name])=>{ const d=dec(b?.odds), pt=parseFloat(b?.overUnder); if(d && !isNaN(pt) && b.available!==false) tot.push({name,price:+d.toFixed(3),point:pt}); });
+    const markets=[h2h.length===2&&{key:'h2h',outcomes:h2h}, sp.length===2&&{key:'spreads',outcomes:sp}, tot.length===2&&{key:'totals',outcomes:tot}].filter(Boolean);
+    return {home_team:H, away_team:A, bookmakers: markets.length?[{key:book, title:SGO_IDS[book]||S.set.book||book, markets}]:[]};
+  }).filter(Boolean);
+  store.set('sgoCache',{t:Date.now(), key:tag, data}); return data;
+}
 async function getLog(pid){
   if(S.logs[pid]) return S.logs[pid];
   if(S.demo) return (S.logs[pid] = demoLog(pid));
@@ -811,7 +833,8 @@ async function loadAll(force){
     else S.status.standings='Standings did not load, so team strength is treated as equal.';
     if(inj.status==='fulfilled') S.injuries=inj.value; else S.status.inj='Injury report did not load.';
     S.b2b = yb.status==='fulfilled' ? new Set(yb.value.flatMap(g=>[g.home.id,g.away.id])) : new Set();
-    if(S.set.oddsKey){ try{ S.oddsApi = await loadOdds(force) || []; if(S.oddsApi.length && S.set.book && !S.oddsApi.some(myBook)) S.status.book=`${S.set.book} isn't in today's odds feed, so prices are the multi-book consensus. Type ${S.set.book}'s multiplier in Edit odds before betting.`; }catch(e){ S.oddsApi=[]; S.status.odds='The Odds API did not answer ('+e.message+'). Check your key in Settings.'; } }
+    if(S.set.sgoKey){ try{ S.oddsApi = await loadSGO(force) || []; if(S.set.book && !S.oddsApi.some(myBook)) S.status.book=`SportsGameOdds has no ${S.set.book} prices for today's games yet. Type the multiplier in Edit odds before betting.`; }catch(e){ S.oddsApi=[]; S.status.odds='SportsGameOdds did not answer ('+e.message+'). Check your key in Settings.'; } }
+    else if(S.set.oddsKey){ try{ S.oddsApi = await loadOdds(force) || []; if(S.oddsApi.length && S.set.book && !S.oddsApi.some(myBook)) S.status.book=`${S.set.book} isn't in today's odds feed, so prices are the multi-book consensus. Type ${S.set.book}'s multiplier in Edit odds before betting.`; }catch(e){ S.oddsApi=[]; S.status.odds='The Odds API did not answer ('+e.message+'). Check your key in Settings.'; } }
   } else { useDemo(); }
   S.loading=false; $('#refresh').classList.remove('spin');
   renderAll();
@@ -1951,6 +1974,8 @@ function renderSettings(){
     ${sl('trust')}${sl('hca')}</section>
   <section class="glass set-group"><h3>Live odds</h3>
     <div class="srow"><div class="srow-h"><label for="s-book">Your sportsbook</label></div><input class="inp" id="s-book" type="text" value="${esc(s.book||'')}" data-chg="set" data-k="book" style="font-family:var(--f-body)"><p>Shown on each betslip so you know where to place it.</p></div>
+    <div class="srow"><div class="srow-h"><label for="s-sgoKey">SportsGameOdds key (1xBet prices)</label></div><input class="inp" id="s-sgoKey" type="password" autocomplete="off" placeholder="Paste your free key" value="${esc(s.sgoKey||'')}" data-chg="set" data-k="sgoKey">
+      <p>Recommended. Pulls your sportsbook's own NBA multipliers. Free key at <a href="https://sportsgameodds.com/pricing" target="_blank" rel="noopener">sportsgameodds.com</a> (Amateur plan). Used instead of The Odds API when set.</p></div>
     <div class="srow"><div class="srow-h"><label for="s-oddsKey">The Odds API key</label></div><input class="inp" id="s-oddsKey" type="password" autocomplete="off" placeholder="Paste your free key" value="${esc(s.oddsKey)}" data-chg="set" data-k="oddsKey">
       <p>Optional. Get a free key at <a href="https://the-odds-api.com" target="_blank" rel="noopener">the-odds-api.com</a> (500 credits a month; each refresh uses 3, and results are cached for 10 minutes). Without a key the app uses ESPN's posted line.${S.oddsLeft!=null?` Credits left this month: <b class="mono">${esc(S.oddsLeft)}</b>.`:''}</p></div></section>
   <section class="glass set-group"><h3>How the numbers work</h3><div class="prose">
@@ -2016,11 +2041,11 @@ const ACT={
   pplayer:el=>{ const pid=el.dataset.pid; S.props={...S.props,pid,pname:el.dataset.name,line:''}; buzz(); renderProps();
     getLog(pid).then(renderProps).catch(()=>{ toast('Game log did not load. Try again.'); }); },
   pstat:el=>{ S.props.stat=el.dataset.stat; S.props.line=''; buzz(); renderProps(); },
-  export:()=>{ const txt=JSON.stringify({v:1,bets:S.bets,set:{...S.set,oddsKey:''}}); const ta=$('#io'); ta.value=txt;
+  export:()=>{ const txt=JSON.stringify({v:1,bets:S.bets,set:{...S.set,oddsKey:'',sgoKey:''}}); const ta=$('#io'); ta.value=txt;
     navigator.clipboard?.writeText(txt).then(()=>toast('Backup copied'),()=>{ ta.select(); toast('Select the text below and copy it'); }) ?? (ta.select(), toast('Select the text below and copy it')); },
-  import:()=>{ try{ const d=JSON.parse($('#io').value); if(!Array.isArray(d.bets)) throw 0; S.bets=d.bets; if(d.set) S.set={...S.set,...d.set,oddsKey:S.set.oddsKey}; saveBets(); saveSet(); renderAll(); toast(`Restored ${d.bets.length} bets`); }
+  import:()=>{ try{ const d=JSON.parse($('#io').value); if(!Array.isArray(d.bets)) throw 0; S.bets=d.bets; if(d.set) S.set={...S.set,...d.set,oddsKey:S.set.oddsKey,sgoKey:S.set.sgoKey}; saveBets(); saveSet(); renderAll(); toast(`Restored ${d.bets.length} bets`); }
     catch(e){ toast('That text isn\'t a Courtside Edge backup'); } },
-  reset:()=>{ if(!S.resetArm){ S.resetArm=true; renderSettings(); return; } S.resetArm=false; S.set={...DEF,oddsKey:S.set.oddsKey}; saveSet(); renderAll(); toast('Settings reset'); }
+  reset:()=>{ if(!S.resetArm){ S.resetArm=true; renderSettings(); return; } S.resetArm=false; S.set={...DEF,oddsKey:S.set.oddsKey,sgoKey:S.set.sgoKey}; saveSet(); renderAll(); toast('Settings reset'); }
 };
 document.addEventListener('click',e=>{ const el=e.target.closest('[data-act]'); if(!el) return; ACT[el.dataset.act]?.(el,e); });
 document.addEventListener('change',e=>{
@@ -2030,8 +2055,8 @@ document.addEventListener('change',e=>{
     else { const key=k==='spH'?'spPoint':'totPoint'; if(v==='') delete o[key]; else o[key]=+v; }
     saveOv(); renderSheetDyn(); refreshMain(); return; }
   if(c==='inj'){ const ov=ovOf(el.dataset.gid); ov.inj[el.dataset.pid]=el.checked; saveOv(); buzz(); renderSheetDyn(); refreshMain(); return; }
-  if(c==='set'){ const k=el.dataset.k; S.set[k] = el.type==='checkbox' ? el.checked : (k==='oddsKey'||k==='book') ? el.value.trim() : (+el.value||0);
-    saveSet(); renderHeader(); if(k==='oddsKey'){ toast(el.value?'Key saved. Loading odds…':'Key removed'); loadAll(true); } else renderSettings(); return; }
+  if(c==='set'){ const k=el.dataset.k; S.set[k] = el.type==='checkbox' ? el.checked : (k==='oddsKey'||k==='sgoKey'||k==='book') ? el.value.trim() : (+el.value||0);
+    saveSet(); renderHeader(); if(k==='oddsKey'||k==='sgoKey'){ toast(el.value?'Key saved. Loading odds…':'Key removed'); loadAll(true); } else renderSettings(); return; }
   if(c==='pline'){ S.props.line=el.value; renderProps(); }
   if(c==='pover'){ S.props.over=el.value; renderProps(); }
   if(c==='punder'){ S.props.under=el.value; renderProps(); }
